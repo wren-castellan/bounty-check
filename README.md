@@ -19,16 +19,25 @@ stopped being real — its footer reads "© 2019 BoostIO, Inc.", and it isn't
 being kept in sync with actual issue/repo state.
 
 This is a small CLI that automates that check: point it at a GitHub issue
-(or an IssueHunt link, or `owner/repo#123`) and it tells you, using GitHub's
-own API, whether the issue is genuinely open, whether the repo is archived,
-and whether someone's already ahead of you with an open PR — before you
-spend time reading the issue in depth, let alone writing code for it.
+(or an IssueHunt link, an Opire link, or `owner/repo#123`) and it tells you,
+using GitHub's own API, whether the issue is genuinely open, whether the
+repo is archived, and whether someone's already ahead of you with an open
+PR — before you spend time reading the issue in depth, let alone writing
+code for it. (Opire has the same stale-dashboard problem as IssueHunt: one
+real example listed a $345 bounty as open on Opire's own dashboard for an
+issue that GitHub already showed as closed and merged.)
 
 ## Usage
 
 ```bash
 python bounty_check.py owner/repo#123 https://github.com/owner/repo/issues/456
+python bounty_check.py https://app.opire.dev/issues/01HW8CK374Y67WDDZG22BYVZQ4
 ```
+
+Opire's own listing URLs use an opaque ID with no owner/repo/number in the
+URL itself (unlike IssueHunt's) — bounty-check resolves it by reading the
+real GitHub issue URL straight off Opire's page before checking it, no
+Opire API key needed.
 
 Or scan every open, `bounty`-labeled issue in a whole repo at once:
 

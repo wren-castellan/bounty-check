@@ -54,6 +54,39 @@ class ParseRefTests(unittest.TestCase):
             bc.parse_ref("foo/bar?x=1#1")
 
 
+class ResolveRefTests(unittest.TestCase):
+    """resolve_ref() turns an Opire listing URL (whose own URL is an opaque
+    ID with no owner/repo/number in it) into the real GitHub issue URL that's
+    embedded as plain text on Opire's own page - no private API needed."""
+
+    OPIRE_PAGE_HTML = (
+        "<html>...<p>Issue URL: <!-- -->"
+        "https://github.com/flowese/UdioWrapper/issues/7</p>...</html>"
+    )
+
+    def test_resolves_opire_url_to_the_embedded_github_issue(self):
+        with patch.object(bc, "_fetch_url_text", return_value=self.OPIRE_PAGE_HTML) as mock_fetch:
+            resolved = bc.resolve_ref("https://app.opire.dev/issues/01HW8CK374Y67WDDZG22BYVZQ4")
+        self.assertEqual(resolved, "https://github.com/flowese/UdioWrapper/issues/7")
+        mock_fetch.assert_called_once_with(
+            "https://app.opire.dev/issues/01HW8CK374Y67WDDZG22BYVZQ4"
+        )
+
+    def test_non_opire_refs_pass_through_unchanged_without_any_network_call(self):
+        with patch.object(bc, "_fetch_url_text") as mock_fetch:
+            self.assertEqual(bc.resolve_ref("foo/bar#1"), "foo/bar#1")
+            self.assertEqual(
+                bc.resolve_ref("https://github.com/foo/bar/issues/1"),
+                "https://github.com/foo/bar/issues/1",
+            )
+        mock_fetch.assert_not_called()
+
+    def test_opire_page_with_no_recognizable_github_link_raises_cleanly(self):
+        with patch.object(bc, "_fetch_url_text", return_value="<html>no issue link here</html>"):
+            with self.assertRaises(ValueError):
+                bc.resolve_ref("https://app.opire.dev/issues/deadbeef")
+
+
 class CheckOneTests(unittest.TestCase):
     """Exercise check_one against mocked GitHub API responses only —
     no network access, so this suite runs offline and deterministically."""
@@ -153,6 +186,31 @@ class CheckOneTests(unittest.TestCase):
         ):
             v = bc.check_one("foo/bar#1", token=None)
         self.assertEqual(v.verdict, "ERROR")
+
+    def test_opire_url_resolves_then_checks_the_real_github_issue(self):
+        opire_html = (
+            "<p>Issue URL: <!-- -->https://github.com/foo/bar/issues/1</p>"
+        )
+
+        def fake_get(url, token):
+            if "/timeline" in url or "/search/issues" in url:
+                return []
+            if "/issues/" in url:
+                return {"title": "x", "state": "open"}
+            return {"archived": False, "pushed_at": "2026-06-01T00:00:00Z"}
+
+        with patch.object(bc, "_fetch_url_text", return_value=opire_html), patch.object(
+            bc, "_get", side_effect=fake_get
+        ):
+            v = bc.check_one("https://app.opire.dev/issues/01HW8CK374Y67WDDZG22BYVZQ4", token=None)
+
+        self.assertEqual(v.verdict, "OPEN_CLAIMABLE")
+        self.assertTrue(any("Resolved from Opire listing" in n for n in v.notes))
+
+    def test_opire_url_with_unresolvable_page_is_a_clean_bad_ref_not_a_crash(self):
+        with patch.object(bc, "_fetch_url_text", return_value="<html>nothing here</html>"):
+            v = bc.check_one("https://app.opire.dev/issues/deadbeef", token=None)
+        self.assertEqual(v.verdict, "BAD_REF")
 
 
 class MainOutputEncodingTests(unittest.TestCase):

@@ -4,9 +4,9 @@
 Checks a GitHub issue against the things that quietly kill a bounty without
 ever showing up in the listing text: the issue got closed, the repo got
 archived, or someone already has an open PR against it. Bounty aggregator
-sites (Algora, IssueHunt, and the raw "bounty"-labeled issues you find via
-GitHub search) don't reliably reflect any of this - see README for why this
-tool exists.
+sites (Algora, IssueHunt, Opire, and the raw "bounty"-labeled issues you find
+via GitHub search) don't reliably reflect any of this - see README for why
+this tool exists.
 """
 from __future__ import annotations
 
@@ -30,6 +30,7 @@ ISSUEHUNT_URL_RE = re.compile(
     r"issuehunt\.io/r/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)"
 )
 SHORTHAND_RE = re.compile(r"^(?P<owner>[A-Za-z0-9._-]+)/(?P<repo>[A-Za-z0-9._-]+)#(?P<number>\d+)$")
+OPIRE_URL_RE = re.compile(r"(?:https?://)?[\w.-]*opire\.dev/issues/(?P<opire_id>[A-Za-z0-9]+)")
 
 STALE_DAYS = 730  # 2 years with no repo activity is worth flagging
 
@@ -57,6 +58,41 @@ def parse_ref(ref: str) -> tuple[str, str, int]:
         "Expected a github.com/.../issues/N URL, an oss.issuehunt.io URL, "
         "or owner/repo#N."
     )
+
+
+def _fetch_url_text(url: str) -> str:
+    """Plain GET of an arbitrary (non-GitHub-API) URL, decoded as text."""
+    req = urllib.request.Request(url)
+    req.add_header("User-Agent", "bounty-check")
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return resp.read().decode("utf-8", errors="replace")
+
+
+def resolve_ref(ref: str) -> str:
+    """Resolve an Opire bounty-listing URL to the real GitHub issue it's for.
+
+    Opire's own issue-page URLs (app.opire.dev/issues/<opaque-id>) don't
+    contain the owner/repo/number anywhere in the URL itself - unlike
+    IssueHunt's URLs, which do. But the underlying GitHub issue URL is
+    embedded as plain text in Opire's server-rendered page ("Issue URL:
+    https://github.com/...") even before any JS runs, so one extra plain GET
+    is enough to resolve it without needing Opire's private API.
+
+    Returns `ref` unchanged if it isn't an Opire URL.
+    """
+    m = OPIRE_URL_RE.search(ref)
+    if not m:
+        return ref
+    url = m.group(0)
+    if not url.startswith("http"):
+        url = "https://" + url
+    html = _fetch_url_text(url)
+    found = ISSUE_URL_RE.search(html)
+    if not found:
+        raise ValueError(
+            f"Couldn't find the underlying GitHub issue on the Opire page for {ref!r}."
+        )
+    return f"https://github.com/{found.group('owner')}/{found.group('repo')}/issues/{found.group('number')}"
 
 
 def _get(url: str, token: str | None) -> dict | list | None:
@@ -140,11 +176,21 @@ def fetch_labeled_issues(owner: str, repo: str, label: str, token: str | None) -
 def check_one(ref: str, token: str | None) -> Verdict:
     v = Verdict(ref=ref)
     try:
-        owner, repo, number = parse_ref(ref)
+        github_ref = resolve_ref(ref)
+    except (ValueError, urllib.error.URLError) as e:
+        v.verdict = "BAD_REF"
+        v.notes.append(f"Couldn't resolve Opire URL: {e}")
+        return v
+
+    try:
+        owner, repo, number = parse_ref(github_ref)
     except ValueError as e:
         v.verdict = "BAD_REF"
         v.notes.append(str(e))
         return v
+
+    if github_ref != ref:
+        v.notes.append(f"Resolved from Opire listing to {github_ref}")
 
     try:
         return _check_one_inner(v, owner, repo, number, token)
