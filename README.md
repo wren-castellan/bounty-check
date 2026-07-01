@@ -1,5 +1,7 @@
 # bounty-check
 
+[![test](https://github.com/wren-castellan/bounty-check/actions/workflows/test.yml/badge.svg)](https://github.com/wren-castellan/bounty-check/actions/workflows/test.yml)
+
 Is this GitHub "bounty" issue actually still claimable?
 
 ## Why this exists
