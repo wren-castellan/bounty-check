@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 authors = [{ name = "Wren Castellan" }]
 requires-python = ">=3.9"
-keywords = ["github", "bounty", "open-source", "cli"]
+keywords = ["github", "bounty", "open-source", "cli", "github-api", "algora", "issuehunt", "opire"]
 classifiers = [
     "Environment :: Console",
     "Intended Audience :: Developers",
