@@ -11,6 +11,7 @@ this tool exists.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
 import re
@@ -30,9 +31,22 @@ ISSUEHUNT_URL_RE = re.compile(
     r"issuehunt\.io/r/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)"
 )
 SHORTHAND_RE = re.compile(r"^(?P<owner>[A-Za-z0-9._-]+)/(?P<repo>[A-Za-z0-9._-]+)#(?P<number>\d+)$")
-OPIRE_URL_RE = re.compile(r"(?:https?://)?[\w.-]*opire\.dev/issues/(?P<opire_id>[A-Za-z0-9]+)")
+# Lookbehind excludes matches glued onto a larger domain/path (e.g. the
+# "opire.dev" in "evil.com/opire.dev/issues/x") so the match always starts at
+# a real URL boundary, not wherever the literal text happens to appear.
+OPIRE_URL_RE = re.compile(
+    r"(?<![\w/.-])(?:https?://)?(?:[\w-]+\.)*opire\.dev/issues/(?P<opire_id>[A-Za-z0-9]+)"
+)
+OPIRE_ISSUE_LABEL_RE = re.compile(r"Issue URL:")
 
 STALE_DAYS = 730  # 2 years with no repo activity is worth flagging
+
+# _fetch_url_text targets a host derived from user-supplied input (unlike
+# _get, which only ever targets the fixed GitHub API host) - bound both size
+# and total wall-clock time so a slow or oversized response can't hang or
+# blow up memory on one bad ref.
+FETCH_MAX_BYTES = 2_000_000
+FETCH_TIMEOUT = 20
 
 
 @dataclass
@@ -61,11 +75,30 @@ def parse_ref(ref: str) -> tuple[str, str, int]:
 
 
 def _fetch_url_text(url: str) -> str:
-    """Plain GET of an arbitrary (non-GitHub-API) URL, decoded as text."""
-    req = urllib.request.Request(url)
-    req.add_header("User-Agent", "bounty-check")
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return resp.read().decode("utf-8", errors="replace")
+    """Plain GET of an arbitrary (non-GitHub-API) URL, decoded as text.
+
+    Bounded on size (FETCH_MAX_BYTES) and wall-clock time (FETCH_TIMEOUT).
+    urllib's per-request `timeout` only bounds a single socket operation, not
+    the whole response - a server that drips a few bytes at a time with
+    delays just under that timeout can otherwise hold the connection open far
+    longer than intended, so the actual fetch runs in a worker thread with a
+    hard `future.result(timeout=...)` deadline instead. (Python can't force-kill
+    a thread, so a truly adversarial drip can still leave that one worker
+    running in the background - but the caller gets its TimeoutError back
+    promptly either way and isn't blocked waiting on it.)
+    """
+
+    def _do_fetch() -> str:
+        req = urllib.request.Request(url)
+        req.add_header("User-Agent", "bounty-check")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.read(FETCH_MAX_BYTES).decode("utf-8", errors="replace")
+
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        return pool.submit(_do_fetch).result(timeout=FETCH_TIMEOUT)
+    finally:
+        pool.shutdown(wait=False)
 
 
 def resolve_ref(ref: str) -> str:
@@ -78,6 +111,13 @@ def resolve_ref(ref: str) -> str:
     https://github.com/...") even before any JS runs, so one extra plain GET
     is enough to resolve it without needing Opire's private API.
 
+    The page also embeds several *other* github.com/.../issues/N links
+    unrelated to the one being viewed (a "browse other rewards" feed) - a
+    plain whole-page search for the first GitHub issue link can pick up one
+    of those instead of the right one, so this looks specifically for the
+    link near the "Issue URL:" label rather than the first match anywhere
+    on the page.
+
     Returns `ref` unchanged if it isn't an Opire URL.
     """
     m = OPIRE_URL_RE.search(ref)
@@ -87,10 +127,19 @@ def resolve_ref(ref: str) -> str:
     if not url.startswith("http"):
         url = "https://" + url
     html = _fetch_url_text(url)
-    found = ISSUE_URL_RE.search(html)
+
+    label = OPIRE_ISSUE_LABEL_RE.search(html)
+    if not label:
+        raise ValueError(
+            f"Couldn't find an \"Issue URL:\" label on the Opire page for {ref!r}."
+        )
+    # A small window right after the label, not the whole page - the label
+    # and the link are typically separated only by an HTML comment/tag or two.
+    nearby = html[label.end() : label.end() + 300]
+    found = ISSUE_URL_RE.search(nearby)
     if not found:
         raise ValueError(
-            f"Couldn't find the underlying GitHub issue on the Opire page for {ref!r}."
+            f"Found an \"Issue URL:\" label but no GitHub issue link near it, for {ref!r}."
         )
     return f"https://github.com/{found.group('owner')}/{found.group('repo')}/issues/{found.group('number')}"
 
@@ -177,7 +226,7 @@ def check_one(ref: str, token: str | None) -> Verdict:
     v = Verdict(ref=ref)
     try:
         github_ref = resolve_ref(ref)
-    except (ValueError, urllib.error.URLError) as e:
+    except (ValueError, urllib.error.URLError, concurrent.futures.TimeoutError) as e:
         v.verdict = "BAD_REF"
         v.notes.append(f"Couldn't resolve Opire URL: {e}")
         return v

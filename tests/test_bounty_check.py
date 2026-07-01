@@ -86,6 +86,117 @@ class ResolveRefTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 bc.resolve_ref("https://app.opire.dev/issues/deadbeef")
 
+    def test_picks_the_issue_next_to_the_label_not_an_unrelated_link_elsewhere_on_the_page(self):
+        """Regression test for a real bug found reviewing this feature: Opire's
+        actual page embeds a "browse other rewards" feed with several other
+        github.com/.../issues/N links unrelated to the one being viewed. A
+        naive whole-page search for the first GitHub issue link can pick up
+        one of those instead of the real one - confirmed live against
+        app.opire.dev/issues/01HW8CK374Y67WDDZG22BYVZQ4, which has 39 such
+        links, the correct one only appearing first by coincidence of that
+        page's current layout. This fixture puts the unrelated link *before*
+        the real "Issue URL:" label to make sure the fix doesn't just get
+        lucky on ordering the way the original bug did."""
+        html = (
+            "<html><script>var otherRewards = ["
+            '{"url": "https://github.com/rodrigompy/bugb/issues/1"},'
+            '{"url": "https://github.com/godotengine/godot/issues/70796"}'
+            "]</script>"
+            "<p>Project: flowese/UdioWrapper on GitHub.</p>"
+            "<p>Issue URL: <!-- -->https://github.com/flowese/UdioWrapper/issues/7</p>"
+            "</html>"
+        )
+        with patch.object(bc, "_fetch_url_text", return_value=html):
+            resolved = bc.resolve_ref("https://app.opire.dev/issues/01HW8CK374Y67WDDZG22BYVZQ4")
+        self.assertEqual(resolved, "https://github.com/flowese/UdioWrapper/issues/7")
+
+    def test_label_present_but_no_link_within_the_search_window_raises_cleanly(self):
+        # A GitHub link exists on the page, but not anywhere near the label -
+        # should not fall back to picking it up from elsewhere on the page.
+        html = (
+            "Issue URL: " + ("x" * 400) +
+            " https://github.com/foo/bar/issues/1"
+        )
+        with patch.object(bc, "_fetch_url_text", return_value=html):
+            with self.assertRaises(ValueError):
+                bc.resolve_ref("https://app.opire.dev/issues/deadbeef")
+
+
+class OpireUrlRegexTests(unittest.TestCase):
+    """OPIRE_URL_RE is deliberately anchored so a match can't be glued onto
+    the end of an unrelated domain/path - see the domain-confusion cases a
+    review specifically tried to break this with."""
+
+    def test_matches_a_full_url(self):
+        m = bc.OPIRE_URL_RE.search("https://app.opire.dev/issues/01HW8CK374Y67WDDZG22BYVZQ4")
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group(0), "https://app.opire.dev/issues/01HW8CK374Y67WDDZG22BYVZQ4")
+
+    def test_matches_a_bare_mention_at_the_start_of_the_ref(self):
+        m = bc.OPIRE_URL_RE.search("opire.dev/issues/abc123")
+        self.assertIsNotNone(m)
+
+    def test_does_not_match_opire_dev_glued_onto_an_unrelated_path(self):
+        # Confirmed non-exploitable (only the matched substring gets fetched,
+        # never the real host in front of it), but still worth rejecting
+        # outright rather than silently misclassifying it as an Opire URL.
+        m = bc.OPIRE_URL_RE.search("https://evil.com/opire.dev/issues/x")
+        self.assertIsNone(m)
+
+    def test_does_not_match_a_subdomain_suffix_trick(self):
+        m = bc.OPIRE_URL_RE.search("https://opire.dev.evil.com/issues/x")
+        self.assertIsNone(m)
+
+    def test_does_not_match_a_userinfo_trick(self):
+        m = bc.OPIRE_URL_RE.search("https://opire.dev@evil.com/issues/x")
+        self.assertIsNone(m)
+
+    def test_resolve_ref_never_constructs_a_malformed_double_scheme_url(self):
+        # The old m.group(0)-based construction could produce "https://://..."
+        # if the match ever started mid-scheme - guard against that directly.
+        with patch.object(bc, "_fetch_url_text", return_value="Issue URL: https://github.com/a/b/issues/1") as mock_fetch:
+            bc.resolve_ref("https://app.opire.dev/issues/x")
+        (called_url,), _ = mock_fetch.call_args
+        self.assertTrue(called_url.startswith("https://"))
+        self.assertNotIn("://://", called_url)
+        self.assertNotIn("https://https://", called_url)
+
+
+class FetchUrlTextBoundsTests(unittest.TestCase):
+    """_fetch_url_text fetches a host derived from user-supplied input (an
+    Opire URL), unlike _get which only ever targets the fixed GitHub API
+    host - so it needs its own size/time bounds, unlike _get."""
+
+    def test_response_larger_than_the_cap_is_truncated_not_loaded_in_full(self):
+        huge = ("x" * (bc.FETCH_MAX_BYTES + 1_000)).encode("utf-8")
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, n=-1):
+                return huge[:n] if n and n > 0 else huge
+
+        with patch("urllib.request.urlopen", return_value=FakeResponse()):
+            result = bc._fetch_url_text("https://app.opire.dev/issues/x")
+        self.assertEqual(len(result), bc.FETCH_MAX_BYTES)
+
+    def test_a_fetch_that_never_returns_times_out_instead_of_hanging_forever(self):
+        import time
+
+        def _slow_fetch(*a, **k):
+            time.sleep(0.6)
+            raise AssertionError("should have timed out before this ever ran")
+
+        with patch.object(bc, "FETCH_TIMEOUT", 0.1), patch(
+            "urllib.request.urlopen", side_effect=_slow_fetch
+        ):
+            with self.assertRaises(bc.concurrent.futures.TimeoutError):
+                bc._fetch_url_text("https://app.opire.dev/issues/x")
+
 
 class CheckOneTests(unittest.TestCase):
     """Exercise check_one against mocked GitHub API responses only —
