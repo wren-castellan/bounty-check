@@ -1,6 +1,9 @@
 # bounty-check
 
 [![test](https://github.com/wren-castellan/bounty-check/actions/workflows/test.yml/badge.svg)](https://github.com/wren-castellan/bounty-check/actions/workflows/test.yml)
+<a href="https://smollaunch.com" target="_blank" rel="noopener">
+  <img src="https://smollaunch.com/badges/featured.svg" alt="bounty-check — Featured on Smol Launch" loading="lazy" width="250" height="60" />
+</a>
 
 Is this GitHub "bounty" issue actually still claimable?
 
