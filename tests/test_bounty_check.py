@@ -14,6 +14,22 @@ def _http_error(code):
     return urllib.error.HTTPError(url="", code=code, msg="", hdrs=None, fp=None)
 
 
+class FetchLabeledIssuesTests(unittest.TestCase):
+    def test_filters_out_pull_requests_and_paginates(self):
+        page1 = [{"number": 1}, {"number": 2, "pull_request": {}}] + [
+            {"number": n} for n in range(3, 102)
+        ]
+        with patch.object(bc, "_get", side_effect=[page1, []]) as mock_get:
+            refs = bc.fetch_labeled_issues("foo", "bar", "bounty", token=None)
+        self.assertEqual(refs, [f"foo/bar#{n}" for n in [1] + list(range(3, 102))])
+        self.assertEqual(mock_get.call_count, 2)  # stopped after a short page
+
+    def test_empty_repo(self):
+        with patch.object(bc, "_get", return_value=[]):
+            refs = bc.fetch_labeled_issues("foo", "bar", "bounty", token=None)
+        self.assertEqual(refs, [])
+
+
 class ParseRefTests(unittest.TestCase):
     def test_github_url(self):
         self.assertEqual(

@@ -25,9 +25,16 @@ spend time reading the issue in depth, let alone writing code for it.
 python bounty_check.py owner/repo#123 https://github.com/owner/repo/issues/456
 ```
 
+Or scan every open, `bounty`-labeled issue in a whole repo at once:
+
+```bash
+python bounty_check.py --repo owner/repo
+python bounty_check.py --repo owner/repo --label "help wanted"
+```
+
 Add `--token`/`GITHUB_TOKEN` to raise the GitHub API rate limit from 60/hr
 to 5000/hr — needed if you're checking more than a handful of issues per
-hour. Add `--json` for machine-readable output.
+hour (`--repo` mode especially). Add `--json` for machine-readable output.
 
 ## What it checks (and what it doesn't)
 
@@ -42,6 +49,12 @@ hour. Add `--json` for machine-readable output.
 It does **not** judge whether an issue is well-scoped, whether the reward
 is worth the effort, or whether the maintainers will actually merge a good
 PR — those still need a human (or agent) read of the issue itself.
+
+Worth knowing: even genuinely open, non-stale bounties often already show
+up as `HAS_OPEN_PR` with a double-digit competing-PR count within hours of
+being posted — popular repos' bounty issues get swarmed fast. A clean
+`OPEN_CLAIMABLE` result is a real signal, not a guarantee nobody else is
+also about to submit.
 
 ## Tests
 

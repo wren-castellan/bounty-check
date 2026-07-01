@@ -115,6 +115,28 @@ def find_linked_open_prs(owner: str, repo: str, number: int, token: str | None) 
     return []
 
 
+def fetch_labeled_issues(owner: str, repo: str, label: str, token: str | None) -> list[str]:
+    """Return `owner/repo#N` refs for open issues in a repo carrying `label`."""
+    refs = []
+    page = 1
+    while True:
+        url = (
+            f"{API_ROOT}/repos/{owner}/{repo}/issues?state=open"
+            f"&labels={urllib.parse.quote(label)}&per_page=100&page={page}"
+        )
+        result = _get(url, token)
+        if not result:
+            break
+        for item in result:
+            if "pull_request" in item:
+                continue  # the issues endpoint also returns PRs; skip them
+            refs.append(f"{owner}/{repo}#{item['number']}")
+        if len(result) < 100:
+            break
+        page += 1
+    return refs
+
+
 def check_one(ref: str, token: str | None) -> Verdict:
     v = Verdict(ref=ref)
     try:
@@ -185,7 +207,17 @@ def _check_one_inner(v: Verdict, owner: str, repo: str, number: int, token: str 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
-        "refs", nargs="+", help="GitHub issue URL(s), IssueHunt URL(s), or owner/repo#N"
+        "refs", nargs="*", help="GitHub issue URL(s), IssueHunt URL(s), or owner/repo#N"
+    )
+    parser.add_argument(
+        "--repo",
+        metavar="OWNER/REPO",
+        help="Scan every open issue in a repo carrying --label, instead of listing refs one by one",
+    )
+    parser.add_argument(
+        "--label",
+        default="bounty",
+        help="Label to filter on when using --repo (default: bounty)",
     )
     parser.add_argument(
         "--token",
@@ -195,7 +227,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="Output JSON instead of a table")
     args = parser.parse_args(argv)
 
-    results = [check_one(ref, args.token) for ref in args.refs]
+    refs = list(args.refs)
+    if args.repo:
+        try:
+            owner, repo = args.repo.split("/", 1)
+        except ValueError:
+            parser.error("--repo must be in the form owner/repo")
+        refs += fetch_labeled_issues(owner, repo, args.label, args.token)
+
+    if not refs:
+        parser.error("Provide at least one ref, or --repo owner/repo to scan a whole repo")
+
+    results = [check_one(ref, args.token) for ref in refs]
 
     if args.json:
         print(json.dumps([vars(r) for r in results], indent=2))
