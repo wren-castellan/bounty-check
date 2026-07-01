@@ -1,3 +1,4 @@
+import io
 import json
 import sys
 import unittest
@@ -152,6 +153,35 @@ class CheckOneTests(unittest.TestCase):
         ):
             v = bc.check_one("foo/bar#1", token=None)
         self.assertEqual(v.verdict, "ERROR")
+
+
+class MainOutputEncodingTests(unittest.TestCase):
+    """Real-world issue/PR titles are arbitrary Unicode (CJK, emoji, etc.),
+    but Windows consoles default stdout to a narrow codepage like cp1252.
+    Reproduces that exact condition with a strict-cp1252 stream instead of
+    just asserting reconfigure() was called, so a regression here fails
+    the same way the real bug did."""
+
+    def test_non_ascii_title_does_not_crash_on_a_narrow_console_codepage(self):
+        issue = {"title": "Audio no sound （Add asio support)", "state": "open"}
+        repo = {"archived": False, "pushed_at": "2026-06-01T00:00:00Z"}
+
+        def fake_get(url, token):
+            if "/timeline" in url or "/search/issues" in url:
+                return []
+            if "/issues/" in url:
+                return issue
+            return repo
+
+        narrow_stdout = io.TextIOWrapper(
+            io.BytesIO(), encoding="cp1252", errors="strict"
+        )
+        with patch.object(bc, "_get", side_effect=fake_get), patch.object(
+            sys, "stdout", narrow_stdout
+        ), patch.object(sys, "stderr", narrow_stdout):
+            bc.main(["foo/bar#1"])  # must not raise UnicodeEncodeError
+
+        narrow_stdout.flush()
 
 
 if __name__ == "__main__":

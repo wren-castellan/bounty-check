@@ -205,6 +205,14 @@ def _check_one_inner(v: Verdict, owner: str, repo: str, number: int, token: str 
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Issue/PR titles are arbitrary Unicode (CJK, emoji, etc.) but Windows
+    # consoles default stdout to the system codepage (e.g. cp1252), which
+    # raises UnicodeEncodeError on anything outside it. Force UTF-8 with a
+    # safe fallback so real-world titles never crash the whole run.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
         "refs", nargs="*", help="GitHub issue URL(s), IssueHunt URL(s), or owner/repo#N"
